@@ -235,7 +235,7 @@ void process_pkgdir(int *packages, struct epkg **vdbpackages, PackageData **data
 	} else {
 		*vdbpackages = *temp;
 	}
-	(*vdbpackages)[*packages] = package;
+	(*vdbpackages)[*packages] = *package;
 	(*packages)++;
 
 	free(catpkgver);
