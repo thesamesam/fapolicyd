@@ -79,6 +79,14 @@ char* remove_newline(char* string) {
 }
 
 /*
+ * Holds the category name and package name while we recurse
+ */
+typedef struct {
+    char *category;
+    char *package;
+} PackageData;
+
+/*
  * Recursively process a directory
  *
  * This function takes a directory pointer and a function pointer as input.
@@ -89,134 +97,126 @@ char* remove_newline(char* string) {
  * @param ... The variable argument list containing the additional arguments.
  * @return void
  */
-void process_directory(DIR *dir, void (*process_entry)(struct dirent *, va_list), ...) {
-	va_list args;
-	va_start(args, process_entry);
+void process_directory(DIR *dir, void (*process_entry)(struct dirent *, int *, struct epkg **, PackageData **), int *packages, struct epkg **vdbpackages, PackageData **data) {
 	struct dirent *dp;
 	while ((dp = readdir(dir)) != NULL) {
-		if (dp->d_type == DT_DIR && strcmp(dp->d_name, ".") != 0 && strcmp(dp->d_name, "..") != 0) {
-			process_entry(dp, args);
+		if ((dp->d_type == DT_DIR && strcmp(dp->d_name, ".") != 0
+			&& strcmp(dp->d_name, "..") != 0) || dp->d_type == DT_REG) {
+			process_entry(dp, packages, vdbpackages, data);
 		}
 	}
-	va_end(args);
 }
 
 /*
- * Read from a VDB package directory and process SLOT, repository, CONTENTS
+ * Read and process SLOT, repository, CONTENTS from a VDB package directory
  * CATEGORY and PF are already known, but could be read at this stage
  *
- * This function takes a dirent pointer, an integer pointer, a struct epkg double pointer,
- * a character pointer for the category name, and a character pointer for the package name.
+ * This function takes a character pointer for the category name, and a character pointer for the package name.
  * It processes the package directory based on the provided arguments.
  *
- * @param pkgdirdp The dirent pointer for the package directory.
- * @param args The variable argument list containing the additional arguments.
- *             The arguments should be in the following order:
- *             - int* packages: The integer pointer to store the number of packages.
- *             - struct epkg** vdbpackages: The double pointer to struct epkg to store the packages.
- *             - char* categoryname: The character pointer for the category name.
- *             - char* pkgname: The character pointer for the package name.
+ * @param packages The integer pointer to store the number of packages.
+ * @param vdbpackages The double pointer to struct epkg to store the packages.
+ * @param categoryname The character pointer for the category name.
+ * @param pkgname The character pointer for the package name.
  */
-void process_pkgdir(struct dirent *pkgdirdp, va_list args) {
-	msg(LOG_DEBUG,"AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA");
-	int *packages = va_arg(args, int*);
-	struct epkg **vdbpackages = va_arg(args, struct epkg**);
-	char *categoryname = va_arg(args, char*);
-	char *pkgname = va_arg(args, char*);
+void process_pkgdir(int *packages, struct epkg **vdbpackages, PackageData **data) {
 
 	char *pkgrepo = NULL;
 	char *pkgslot = NULL;
 	int pkgfiles = 0;
 	ebuildfiles* pkgcontents = NULL;
 
-	char *fileNames[] = {"SLOT", "repository", "CONTENTS"};
-	int fileCount = sizeof(fileNames) / sizeof(fileNames[0]);
+	char *filenames[] = {"repository", "SLOT", "CONTENTS"};
+	int nfilenames = sizeof(filenames) / sizeof(filenames[0]);
 
-	for (int i = 0; i < fileCount; i++) {
+
+	for (int i = 0; i < nfilenames; i++) {
 		#ifdef DEBUG
-		msg(LOG_DEBUG, "\tProcessing %s", fileNames[i]);
+		msg(LOG_DEBUG, "\tProcessing %s", filenames[i]);
 		#endif
-		if (pkgdirdp->d_type == DT_REG && strcmp(pkgdirdp->d_name, fileNames[i]) == 0) {
-			char *filePath;
-			if (asprintf(&filePath, "/var/db/pkg/%s/%s/%s", categoryname, pkgname, pkgdirdp->d_name) == -1) {
-				perror("asprintf");
-				filePath = NULL;
+		char *filepath;
+		if (asprintf(&filepath, "/var/db/pkg/%s/%s/%s", (*data)->category, (*data)->package, filenames[i]) == -1) {
+			perror("asprintf");
+			filepath = NULL;
+		}
+		if (filepath) {
+			FILE *fp;
+			char *line = NULL;
+			size_t len = 0;
+			ssize_t read;
+			if ((fp = fopen(filepath, "r")) == NULL) {
+				msg(LOG_ERR, "Could not open %s", filepath);
+				free(filepath);
+				return;
 			}
-			if (filePath) {
-				FILE *fp;
-				char *line = NULL;
-				size_t len = 0;
-				ssize_t read;
-				if ((fp = fopen(filePath, "r")) == NULL) {
-					msg(LOG_ERR, "Could not open %s", filePath);
-					free(filePath);
-					return;
-				}
 
-				if (strcmp(fileNames[i], "SLOT") == 0 || strcmp(fileNames[i], "repository") == 0) {
-					// SLOT and repository will only ever contain a single line
-					if ((read = getline(&line, &len, fp)) != -1) {
-						if (strcmp(fileNames[i], "SLOT") == 0) {
-							pkgslot = strdup(line);
-							remove_newline(pkgslot);
-							#ifdef DEBUG
-							msg(LOG_DEBUG, "\tslot: %s", pkgslot);
-							#endif
-						} else if (strcmp(fileNames[i], "repository") == 0) {
-							pkgrepo = strdup(line);
-							remove_newline(pkgrepo);
-							#ifdef DEBUG
-							msg(LOG_DEBUG, "\trepo: %s", pkgrepo);
-							#endif
-						}
-					}
-				} else if (strcmp(fileNames[i], "CONTENTS") == 0) {
-					while ((read = getline(&line, &len, fp)) != -1) {
-						char *token;
-						char *saveptr;
-
-						token = strtok_r(line, " ", &saveptr); // obj/dir/sym, /path/to/file, md5, datestamp
-
-						if (token) {
-							// we only care about files
-							if ((strcmp(token, "dir")) == 0 || (strcmp(token, "sym")) == 0) {
-								continue;
-							}
-
-							ebuildfiles *file = malloc(sizeof(ebuildfiles));
-							token = strtok_r(NULL, " ", &saveptr);
-							file->path = strdup(token);
-							token = strtok_r(NULL, " ", &saveptr);
-							file->md5 = strdup(token);
-
-							// we don't care about the datestamp
-
-							pkgcontents = realloc(pkgcontents, sizeof(ebuildfiles) * (pkgfiles + 1));
-							pkgcontents[pkgfiles] = *file;
-							pkgfiles++;
-							free(file);
-						}
+			if (strcmp(filenames[i], "SLOT") == 0 || strcmp(filenames[i], "repository") == 0) {
+				// SLOT and repository will only ever contain a single line
+				if ((read = getline(&line, &len, fp)) != -1) {
+					if (strcmp(filenames[i], "SLOT") == 0) {
+						pkgslot = strdup(line);
+						remove_newline(pkgslot);
+						#ifdef DEBUG
+						msg(LOG_DEBUG, "\t\tslot: %s", pkgslot);
+						#endif
+					} else if (strcmp(filenames[i], "repository") == 0) {
+						pkgrepo = strdup(line);
+						remove_newline(pkgrepo);
+						#ifdef DEBUG
+						msg(LOG_DEBUG, "\t\trepo: %s", pkgrepo);
+						#endif
 					}
 				}
+			} else if (strcmp(filenames[i], "CONTENTS") == 0) {
+				while ((read = getline(&line, &len, fp)) != -1) {
+					char *token;
+					char *saveptr;
 
-				free(line);
-				free(filePath);
+					token = strtok_r(line, " ", &saveptr); // obj/dir/sym, /path/to/file, md5, datestamp
+
+					if (token) {
+						// we only care about files
+						if ((strcmp(token, "dir")) == 0 || (strcmp(token, "sym")) == 0) {
+							continue;
+						}
+
+						ebuildfiles *file = malloc(sizeof(ebuildfiles));
+						token = strtok_r(NULL, " ", &saveptr);
+						file->path = strdup(token);
+						token = strtok_r(NULL, " ", &saveptr);
+						file->md5 = strdup(token);
+
+						// we don't care about the datestamp
+
+						pkgcontents = realloc(pkgcontents, sizeof(ebuildfiles) * (pkgfiles + 1));
+						pkgcontents[pkgfiles] = *file;
+						pkgfiles++;
+						free(file);
+					}
+				}
+				#ifdef DEBUG
+				msg(LOG_DEBUG, "\t\tfiles: %i", pkgfiles);
+				#endif
+			}
+
+			free(line);
+			free(filepath);
 			}
 		}
-	}
 
 	// Construct a CPVR string e.g. dev-libs/libxml2-2.9.10{-r0}
 	// We're not processing based on this information, but it's useful for logging
 	// If there's a need to split into components see
 	// https://github.com/gentoo/portage-utils/blob/master/libq/atom.c
-	char *catpkgver = malloc(strlen(categoryname) + strlen(pkgname) + 2);
+	char *catpkgver = malloc(strlen((*data)->category) + strlen((*data)->package) + 2);
 	if (catpkgver == NULL) {
 		msg(LOG_ERR, "Could not allocate memory.");
+		perror("malloc");
 		return;
 	}
-	strcpy(catpkgver, categoryname);
+	strcpy(catpkgver, (*data)->category);
 	strcat(catpkgver, "/");
-	strcat(catpkgver, pkgname);
+	strcat(catpkgver, (*data)->package);
 
 	// make a new package
 	struct epkg *package = malloc(sizeof(struct epkg));
@@ -232,7 +232,7 @@ void process_pkgdir(struct dirent *pkgdirdp, va_list args) {
 	(*packages)++;
 
 	#ifdef DEBUG
-	msg(LOG_DEBUG, "Package %s\n\tSlot %s\n\tRepo %s\n\tFiles %i",
+	msg(LOG_DEBUG, "Stored:\n\tPackage: %s\n\tSlot: %s\n\tRepo: %s\n\tFiles: %i",
 		package->cpv, package->slot, package->repo, package->files);
 	#endif
 	free(catpkgver);
@@ -256,33 +256,47 @@ void process_pkgdir(struct dirent *pkgdirdp, va_list args) {
  *             - category_name: The name of the category.
  * @return void
  */
-void process_vdb_package(struct dirent *pkgdp, va_list args) {
-	int *packages = va_arg(args, int*);
-	struct epkg **vdbpackages = va_arg(args, struct epkg**);
-	char *categoryname = va_arg(args, char*);
-	char *pkgpath;
-	// construct the package directory path using the category name and package name
-	if (asprintf(&pkgpath, "/var/db/pkg/%s/%s", categoryname, pkgdp->d_name) == -1) {
-		pkgpath = NULL;
-		perror("asprintf");
+void process_vdb_package(struct dirent *pkgdp, int *packages, struct epkg **vdbpackages, PackageData **data) {
+    char *pkgpath;
+    // construct the package directory path using the category name and package name
+    if (asprintf(&pkgpath, "/var/db/pkg/%s/%s", (*data)->category, pkgdp->d_name) == -1) {
+        pkgpath = NULL;
+        perror("asprintf");
+    }
+    msg(LOG_INFO, "Loading package %s/%s", (*data)->category, pkgdp->d_name);
+    #ifdef DEBUG
+    msg(LOG_DEBUG, "\tPath: %s", pkgpath);
+    #endif
+
+	if((*data)->package != NULL) {
+		free((*data)->package);
+		(*data)->package = NULL;
+	}
+	(*data)->package = strdup(pkgdp->d_name);
+
+	if((*data)->package == NULL) {
+		msg(LOG_ERR, "Memory allocation failed!");
+		exit(1);
 	}
 
-	msg(LOG_INFO, "Loading package %s/%s", categoryname, pkgdp->d_name);
 
-	if (pkgpath) {
-		DIR *pkgdir;
-		if ((pkgdir = opendir(pkgpath)) == NULL) {
-			msg(LOG_ERR, "Could not open %s", pkgpath);
-			msg(LOG_ERR, "Error: %s", strerror(errno));
-			free(pkgpath);
-			return;
-		}
+    if (pkgpath) {
+        DIR *pkgdir;
+        if ((pkgdir = opendir(pkgpath)) == NULL) {
+            msg(LOG_ERR, "Could not open %s", pkgpath);
+            msg(LOG_ERR, "Error: %s", strerror(errno));
+            free(pkgpath);
+            return;
+        }
 
-		process_directory(pkgdir, process_pkgdir, packages, vdbpackages, categoryname, pkgdp->d_name);
-		closedir(pkgdir);
-		free(pkgpath);
-	}
+        // close the dir now, we will directly open the files by name
+        closedir(pkgdir);
+        free(pkgpath);
+        process_pkgdir(packages, vdbpackages, data);
+    }
+	free((*data)->package);
 }
+
 
 /*
  * For a directory pointer within the VDB root, process a directory (category)
@@ -295,9 +309,8 @@ void process_vdb_package(struct dirent *pkgdp, va_list args) {
  *               - packages: A pointer to an integer representing the number of packages.
  *               - vdbpackages: A pointer to an array of `struct epkg` pointers representing the vdb packages.
  */
-void process_vdb_category(struct dirent *vdbdp, va_list args) {
-	int *packages = va_arg(args, int*);
-	struct epkg **vdbpackages = va_arg(args, struct epkg**);
+void process_vdb_category(struct dirent *vdbdp, int *packages, struct epkg **vdbpackages, PackageData **data) {
+
 	char *catdir;
 	// construct the category directory path
 	if (asprintf(&catdir, "/var/db/pkg/%s", vdbdp->d_name) == -1) {
@@ -306,6 +319,7 @@ void process_vdb_category(struct dirent *vdbdp, va_list args) {
 	}
 
 	msg(LOG_INFO, "Loading category %s", vdbdp->d_name);
+	((*data)->category) = strdup(vdbdp->d_name);
 
 	if (catdir) {
 		DIR *category;
@@ -316,10 +330,11 @@ void process_vdb_category(struct dirent *vdbdp, va_list args) {
 			return;
 		}
 
-		process_directory(category, process_vdb_package, packages, vdbpackages, vdbdp->d_name);
+		process_directory(category, process_vdb_package, packages, vdbpackages, data);
 		closedir(category);
 		free(catdir);
 	}
+	free((*data)->category);
 }
 
 /*
@@ -366,12 +381,15 @@ static int ebuild_load_list(const conf_t *conf) {
 
 	msg(LOG_INFO, "Initialising ebuild backend");
 	msg(LOG_DEBUG, "Processing VDB");
+
 	/*
 	 * recurse through category/package-version/ dirs,
 	 * process CONTENTS (files, md5s), repository, SLOT,
 	 * store in epkg array
 	*/
-	process_directory(vdbdir, process_vdb_category, &packages, &vdbpackages);
+	PackageData *data = malloc(sizeof(PackageData));
+	process_directory(vdbdir, process_vdb_category, &packages, &vdbpackages, &data);
+	free(data);
 	closedir(vdbdir);
 
 	msg(LOG_INFO, "Processed %d packages.", packages);
