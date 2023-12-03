@@ -40,10 +40,17 @@ backend ebuild_backend = {
 		{0, 0, NULL},
 };
 
+/*
+ * Collection of paths and MD5s for a package
+ */
 typedef struct contents {
 	char *md5;
 	char *path;
 } ebuildfiles;
+
+/*
+ * A package
+ */
 
 struct epkg {
 	char *cpv;
@@ -53,6 +60,15 @@ struct epkg {
 	ebuildfiles *content;
 };
 
+typedef struct {
+    void (*process_entry)(struct dirent *, ...);
+    int num_args;
+    void *args[];
+} func_struct;
+
+/*
+ * Remove the trailing newline from a string
+ */
 char* remove_newline(char* string) {
     int len = strlen(string);
     if (len > 0 && string[len-1] == '\n') {
@@ -62,27 +78,50 @@ char* remove_newline(char* string) {
 }
 
 /*
- * Iterate over a directory and call a function on each entry
+ * Recursively process a directory
+ *
+ * This function takes a directory pointer and a function pointer as input.
+ * It processes the directory based on the provided function pointer.
+ *
+ * @param dir The directory pointer.
+ * @param process_entry The function pointer to the function to process the directory.
+ * @param ... The variable argument list containing the additional arguments.
+ * @return void
  */
-void process_directory(DIR *dir, void (*process_entry)(struct dirent *, ...),
-						int *packages, struct epkg **vdbpackages, ...) {
+void process_directory(DIR *dir, void (*process_entry)(struct dirent *, va_list), ...) {
 	va_list args;
-	va_start(args, vdbpackages);
+	va_start(args, process_entry);
 	struct dirent *dp;
 	while ((dp = readdir(dir)) != NULL) {
 		if (dp->d_type == DT_DIR && strcmp(dp->d_name, ".") != 0 && strcmp(dp->d_name, "..") != 0) {
-			process_entry(dp, va_arg(args, int*), va_arg(args, struct epkg**), va_arg(args, char*));
+			process_entry(dp, args);
 		}
 	}
 	va_end(args);
 }
 
-
 /*
  * Read from a VDB package directory and process SLOT, repository, CONTENTS
  * CATEGORY and PF are already known, but could be read at this stage
+ *
+ * This function takes a dirent pointer, an integer pointer, a struct epkg double pointer,
+ * a character pointer for the category name, and a character pointer for the package name.
+ * It processes the package directory based on the provided arguments.
+ *
+ * @param pkgverdp The dirent pointer for the package directory.
+ * @param args The variable argument list containing the additional arguments.
+ *             The arguments should be in the following order:
+ *             - int* packages: The integer pointer to store the number of packages.
+ *             - struct epkg** vdbpackages: The double pointer to struct epkg to store the packages.
+ *             - char* categoryname: The character pointer for the category name.
+ *             - char* pkgname: The character pointer for the package name.
  */
-void process_pkgdir(struct dirent *pkgverdp, int *packages, struct epkg **vdbpackages, char *categoryname, char *pkgname) {
+void process_pkgdir(struct dirent *pkgverdp, va_list args) {
+
+	int *packages = va_arg(args, int*);
+	struct epkg **vdbpackages = va_arg(args, struct epkg**);
+	char *categoryname = va_arg(args, char*);
+	char *pkgname = va_arg(args, char*);
 
 	char *pkgrepo = NULL;
 	char *pkgslot = NULL;
@@ -194,14 +233,14 @@ void process_pkgdir(struct dirent *pkgverdp, int *packages, struct epkg **vdbpac
 			}
 		}
 	}
-	// Construct a CPV string e.g. dev-libs/libxml2-2.9.10{-r0}
+	// Construct a CPVR string e.g. dev-libs/libxml2-2.9.10{-r0}
 	// We're not processing based on this information, but it's useful for logging
 	// If there's a need to split into components see
 	// https://github.com/gentoo/portage-utils/blob/master/libq/atom.c
 	char *catpkgver = malloc(strlen(categoryname) + strlen(pkgname) + 2);
 	if (catpkgver == NULL) {
 		msg(LOG_ERR, "Could not allocate memory.");
-		return 1;
+		return;
 	}
 	strcpy(catpkgver, categoryname);
 	strcat(catpkgver, "/");
@@ -216,9 +255,9 @@ void process_pkgdir(struct dirent *pkgverdp, int *packages, struct epkg **vdbpac
 	package->content = pkgcontents;
 
 	// add it to the array
-	*vdbpackages = realloc(vdbpackages, sizeof(struct epkg) * (*packages + 1));
+	*vdbpackages = realloc(*vdbpackages, sizeof(struct epkg) * (*packages + 1));
 	*vdbpackages[*packages] = *package;
-	*packages++;
+	(*packages)++;
 
 	#ifdef DEBUG
 	msg(LOG_DEBUG, "Package %s\n\tSlot %s\n\tRepo %s\n\tFiles %i",
@@ -230,10 +269,26 @@ void process_pkgdir(struct dirent *pkgverdp, int *packages, struct epkg **vdbpac
 	free(package);
 }
 
-/*
- * Iterate over every package in a category
+
+/**
+ * Processes a category for packages.
+ *
+ * This function is responsible for processing a category and its packages.
+ * It takes in a dirent structure pointer and a variable argument list
+ * The packages and vdbpackages pointers are extracted from the variable argument list.
+ *
+ * @param pkgdp A pointer to a dirent structure representing a package.
+ * @param args A variable argument list containing the packages, vdbpackages, and category name.
+ *             The arguments should be passed in the following order:
+ *             - packages: A pointer to the packages.
+ *             - vdbpackages: A pointer to the vdbpackages.
+ *             - category_name: The name of the category.
+ * @return void
  */
-void process_category(struct dirent *pkgdp, int *packages, struct epkg **vdbpackages, char *categoryname) {
+void process_category(struct dirent *pkgdp, va_list args) {
+	int *packages = va_arg(args, int*);
+	struct epkg **vdbpackages = va_arg(args, struct epkg**);
+	char *categoryname = va_arg(args, char*);
 	char *pkgname;
 	if (asprintf(&pkgname, "%s/%s", categoryname, pkgdp->d_name) == -1) {
 		pkgname = NULL;
@@ -256,9 +311,19 @@ void process_category(struct dirent *pkgdp, int *packages, struct epkg **vdbpack
 }
 
 /*
- * Open a category directory and process it
+ * For a given category directory, process its contents
+ *
+ * This function opens a category directory and processes its contents.
+ * It takes a `struct dirent` pointer and a variable argument list as input.
+ *
+ * @param vdbdp A pointer to a `struct dirent` representing the category directory entry.
+ * @param args   A variable argument list containing the following arguments:
+ *               - packages: A pointer to an integer representing the number of packages.
+ *               - vdbpackages: A pointer to an array of `struct epkg` pointers representing the vdb packages.
  */
-void process_vdb(struct dirent *vdbdp, int *packages, struct epkg **vdbpackages) {
+void process_vdb(struct dirent *vdbdp, va_list args) {
+	int *packages = va_arg(args, int*);
+	struct epkg **vdbpackages = va_arg(args, struct epkg**);
 	char *catdir;
 	if (asprintf(&catdir, "/var/db/pkg/%s", vdbdp->d_name) == -1) {
 		catdir = NULL;
@@ -313,7 +378,6 @@ static int ebuild_load_list(const conf_t *conf) {
 	struct _hash_record **hashtable_ptr = &hashtable;
 
 	DIR *vdbdir;
-	struct dirent *vdbdp;
 
 	if ((vdbdir = opendir("/var/db/pkg")) == NULL) {
 		msg(LOG_ERR, "Could not open /var/db/pkg");
@@ -329,7 +393,7 @@ static int ebuild_load_list(const conf_t *conf) {
 	 * store in epkg array
 	*/
 	process_directory(vdbdir, process_vdb, &packages, &vdbpackages);
-	close(vdbdir);
+	closedir(vdbdir);
 
 	msg(LOG_INFO, "Processed %d packages.", packages);
 
