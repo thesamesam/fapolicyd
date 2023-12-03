@@ -50,7 +50,7 @@ makes use of the kernel's fanotify interface to determine file access rights.
 #ELN %endif
 #ELN BuildArch: noarch
 #ELN %{?selinux_requires}
-#ELN 
+#ELN
 #ELN %description    selinux
 #ELN The %{name}-selinux package contains selinux policy for the %{name} daemon.
 
@@ -92,14 +92,14 @@ sed -i "s|%ld_so_path%|`realpath $interpret`|g" rules.d/*.rules
 #ELN pushd %{name}-selinux-%{semodule_version}
 #ELN make
 #ELN popd
-#ELN 
+#ELN
 #ELN # selinux
 #ELN %pre selinux
 #ELN %selinux_relabel_pre -s %{selinuxtype}
 
 %install
 %make_install
-install -p -m 644 -D init/%{name}-tmpfiles.conf %{buildroot}/%{_tmpfilesdir}/%{name}.conf
+install -p -m 644 -D extra/%{name}-tmpfiles.conf %{buildroot}/%{_tmpfilesdir}/%{name}.conf
 mkdir -p %{buildroot}/%{_localstatedir}/lib/%{name}
 mkdir -p %{buildroot}/run/%{name}
 mkdir -p %{buildroot}%{_sysconfdir}/%{name}/trust.d
@@ -235,16 +235,16 @@ fi
 #ELN %{_datadir}/selinux/packages/%{selinuxtype}/%{name}.pp.bz2
 #ELN %ghost %verify(not md5 size mode mtime) %{_sharedstatedir}/selinux/%{selinuxtype}/active/modules/200/%{name}
 #ELN %{_datadir}/selinux/devel/include/%{moduletype}/ipp-%{name}.if
-#ELN 
+#ELN
 #ELN %post selinux
 #ELN %selinux_modules_install -s %{selinuxtype} %{_datadir}/selinux/packages/%{selinuxtype}/%{name}.pp.bz2
 #ELN %selinux_relabel_post -s %{selinuxtype}
-#ELN 
+#ELN
 #ELN %postun selinux
 #ELN if [ $1 -eq 0 ]; then
 #ELN     %selinux_modules_uninstall -s %{selinuxtype} %{name}
 #ELN fi
-#ELN 
+#ELN
 #ELN %posttrans selinux
 #ELN %selinux_relabel_post -s %{selinuxtype}
 
