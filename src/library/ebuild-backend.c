@@ -61,30 +61,24 @@ struct epkg {
 	ebuildfiles *content;
 };
 
+/*
+ * Holds the category name and package name while we recurse
+ */
 typedef struct {
-    void (*process_entry)(struct dirent *, ...);
-    int num_args;
-    void *args[];
-} func_struct;
+	char *category;
+	char *package;
+} PackageData;
 
 /*
  * Remove the trailing newline from a string
  */
 char* remove_newline(char* string) {
-    int len = strlen(string);
-    if (len > 0 && string[len-1] == '\n') {
-        string[len-1] = '\0';
-    }
-    return string;
+	int len = strlen(string);
+	if (len > 0 && string[len-1] == '\n') {
+		string[len-1] = '\0';
+	}
+	return string;
 }
-
-/*
- * Holds the category name and package name while we recurse
- */
-typedef struct {
-    char *category;
-    char *package;
-} PackageData;
 
 /*
  * Recursively process a directory
@@ -97,7 +91,8 @@ typedef struct {
  * @param ... The variable argument list containing the additional arguments.
  * @return void
  */
-void process_directory(DIR *dir, void (*process_entry)(struct dirent *, int *, struct epkg **, PackageData **), int *packages, struct epkg **vdbpackages, PackageData **data) {
+void process_directory(DIR *dir, void (*process_entry)(struct dirent *, int *, struct epkg **, PackageData **),
+	int *packages, struct epkg **vdbpackages, PackageData **data) {
 	struct dirent *dp;
 	while ((dp = readdir(dir)) != NULL) {
 		if ((dp->d_type == DT_DIR && strcmp(dp->d_name, ".") != 0
@@ -226,15 +221,23 @@ void process_pkgdir(int *packages, struct epkg **vdbpackages, PackageData **data
 	package->files = pkgfiles;
 	package->content = pkgcontents;
 
-	// add it to the array
-	*vdbpackages = realloc(*vdbpackages, sizeof(struct epkg) * (*packages + 1));
-	*vdbpackages[*packages] = *package;
-	(*packages)++;
-
 	#ifdef DEBUG
 	msg(LOG_DEBUG, "Stored:\n\tPackage: %s\n\tSlot: %s\n\tRepo: %s\n\tFiles: %i",
 		package->cpv, package->slot, package->repo, package->files);
+	msg(LOG_DEBUG, "Package number %i", *packages + 1);
 	#endif
+
+	// add it to the array
+	struct epkg **temp = realloc(*vdbpackages, sizeof(struct epkg*) * (*packages + 1));
+	if(temp == NULL) {
+		msg(LOG_ERR, "Could not allocate memory.");
+		return;
+	} else {
+		*vdbpackages = *temp;
+	}
+	(*vdbpackages)[*packages] = package;
+	(*packages)++;
+
 	free(catpkgver);
 	free(pkgslot);
 	free(pkgrepo);
@@ -257,16 +260,16 @@ void process_pkgdir(int *packages, struct epkg **vdbpackages, PackageData **data
  * @return void
  */
 void process_vdb_package(struct dirent *pkgdp, int *packages, struct epkg **vdbpackages, PackageData **data) {
-    char *pkgpath;
-    // construct the package directory path using the category name and package name
-    if (asprintf(&pkgpath, "/var/db/pkg/%s/%s", (*data)->category, pkgdp->d_name) == -1) {
-        pkgpath = NULL;
-        perror("asprintf");
-    }
-    msg(LOG_INFO, "Loading package %s/%s", (*data)->category, pkgdp->d_name);
-    #ifdef DEBUG
-    msg(LOG_DEBUG, "\tPath: %s", pkgpath);
-    #endif
+	char *pkgpath;
+	// construct the package directory path using the category name and package name
+	if (asprintf(&pkgpath, "/var/db/pkg/%s/%s", (*data)->category, pkgdp->d_name) == -1) {
+		pkgpath = NULL;
+		perror("asprintf");
+	}
+	msg(LOG_INFO, "Loading package %s/%s", (*data)->category, pkgdp->d_name);
+	#ifdef DEBUG
+	msg(LOG_DEBUG, "\tPath: %s", pkgpath);
+	#endif
 
 	if((*data)->package != NULL) {
 		free((*data)->package);
@@ -276,25 +279,25 @@ void process_vdb_package(struct dirent *pkgdp, int *packages, struct epkg **vdbp
 
 	if((*data)->package == NULL) {
 		msg(LOG_ERR, "Memory allocation failed!");
-		exit(1);
+		return;
 	}
 
 
-    if (pkgpath) {
-        DIR *pkgdir;
-        if ((pkgdir = opendir(pkgpath)) == NULL) {
-            msg(LOG_ERR, "Could not open %s", pkgpath);
-            msg(LOG_ERR, "Error: %s", strerror(errno));
-            free(pkgpath);
-            return;
-        }
+	if (pkgpath) {
+		DIR *pkgdir;
+		if ((pkgdir = opendir(pkgpath)) == NULL) {
+			msg(LOG_ERR, "Could not open %s", pkgpath);
+			msg(LOG_ERR, "Error: %s", strerror(errno));
+			free(pkgpath);
+			return;
+		}
 
-        // close the dir now, we will directly open the files by name
-        closedir(pkgdir);
-        free(pkgpath);
-        process_pkgdir(packages, vdbpackages, data);
-    }
-	free((*data)->package);
+		// close the dir now, we will directly open the files by name
+		closedir(pkgdir);
+		free(pkgpath);
+		process_pkgdir(packages, vdbpackages, data);
+	}
+
 }
 
 
@@ -388,6 +391,8 @@ static int ebuild_load_list(const conf_t *conf) {
 	 * store in epkg array
 	*/
 	PackageData *data = malloc(sizeof(PackageData));
+	data->category = NULL;
+	data->package = NULL;
 	process_directory(vdbdir, process_vdb_category, &packages, &vdbpackages, &data);
 	free(data);
 	closedir(vdbdir);
@@ -414,6 +419,7 @@ static int ebuild_load_list(const conf_t *conf) {
 			}
 			add_file_to_backend_by_md5(file->path, file->md5, hashtable_ptr, SRC_EBUILD, &ebuild_backend);
 		}
+		free(package);
 	}
 	free(vdbpackages);
 	return 0;
