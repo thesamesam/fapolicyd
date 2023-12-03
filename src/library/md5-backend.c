@@ -46,24 +46,6 @@ int test_file(const char *path) {
 }
 
 /*
- * Exclude a known list of paths that shouldn't contain binaries
- * (installed by a package manager, anyway).
- */
-int exclude_path(const char *path) {
-	const char *excluded_paths[] = {
-	"/usr/share/",
-	"/usr/src/",
-	};
-	const int num_excluded_paths = sizeof(excluded_paths) / sizeof(excluded_paths[0]);
-	for (int i = 0; i < num_excluded_paths; i++) {
-		if (strncmp(path, excluded_paths[i], strlen(excluded_paths[i])) == 0) {
-			return 1;
-		}
-	}
-	return 0;
-}
-
-/*
  * Given a path to a file with an expected MD5 digest, add
  * the file to the trust database if it matches.
  *
@@ -86,11 +68,6 @@ int add_file_to_backend_by_md5(const char *path,
 							trust_src_t trust_src,
 							backend *backend)
 {
-
-	// we can ignore files under certain paths; they should never be binaries
-	if(exclude_path(path)) {
-		return 1;
-	}
 
 	// TODO: Get the backend name tha called us and output that; maybe we're on an insane system that uses portage _and_ deb?
 	#ifdef DEBUG
